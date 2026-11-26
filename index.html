@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Личное меню на неделю, рецепты и дневник питания">
+  <meta name="robots" content="noindex">
+  <title>Режим сушки</title>
+  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./browser.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <header class="top"><div class="wrap top-in">
+    <a class="logo" href="#menu">🌿 Режим сушки</a>
+    <nav aria-label="Разделы">
+      <a href="#menu">Меню</a><a href="#diary">Дневник</a><a href="#shopping">Покупки</a><a href="#recipes">Блюда</a><a href="#weight">Вес</a><a href="#profile">Анкета</a>
+    </nav>
+  </div></header>
+  <main class="wrap content" id="screen"><noscript>Включите JavaScript, чтобы рассчитать меню.</noscript></main>
+  <footer class="wrap foot stack">
+    <div class="row-gap"><button class="btn ghost small-btn" id="export">Скачать данные</button><button class="btn ghost small-btn" id="import">Загрузить данные</button><input type="file" id="file" accept=".json,application/json" hidden></div>
+    <p id="status" role="status"></p>
+    <p>Данные хранятся в этом браузере. Расчёты ориентировочные.</p>
+  </footer>
+  <dialog id="dialog" class="card"></dialog>
+</body>
+</html>
