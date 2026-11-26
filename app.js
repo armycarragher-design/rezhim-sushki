@@ -1,3 +1,4 @@
+import {parseRecipeText} from './recipe-text.js';
 import catalog from './catalog.js';
 import {addDays, dateKey, format, makeMenu, monday, round} from './menu.js';
 
@@ -43,6 +44,10 @@ function validate(data) {
     numericNutrients(row) && (row.unit_g == null || row.unit_g > 0 && finite(row.unit_g)) &&
     (row.unit_g == null || typeof row.unit === 'string');
   const validRecipe = row => object(row) && /^u[\w-]+$/.test(row.id) && typeof row.name === 'string' &&
+    (row.text == null || typeof row.text === 'string') &&
+    (row.ingredientDraft == null || (Array.isArray(row.ingredientDraft) && row.ingredientDraft.every(item =>
+      object(item) && typeof item.key === 'string' && typeof item.line === 'string' &&
+      (item.grams === null || finite(item.grams) && item.grams > 0)))) &&
     finite(row.minutes) && strings(row.meals) && row.meals.every(key => own(catalog.pools, key)) &&
     strings(row.steps) && Array.isArray(row.ingredients) && row.ingredients.every(part =>
       Array.isArray(part) && typeof part[0] === 'string' && finite(part[1]) && part[1] > 0);
@@ -336,9 +341,167 @@ function diaryPage(menu) {
     card(extraForm), card(habitsForm)];
 }
 
+let recipeFilter = 'all';
+
+function recipeEditor(menu, recipe = null) {
+  const knownFoods = Object.entries(menu.foods).sort(([, a], [, b]) => a.name.localeCompare(b.name, 'ru'));
+  const foodOptions = [['', 'Выберите продукт'], ...knownFoods.map(([key, food]) => [key, food.name])];
+  const name = h('input', {type: 'text', name: 'name', value: recipe?.name, maxlength: 120, required: true});
+  const minutes = h('input', {type: 'number', name: 'minutes', value: recipe?.minutes, min: 0, max: 1440, step: 1});
+  const original = h('textarea', {name: 'recipeText', rows: 5, maxlength: 24000,
+    placeholder: 'Вставьте текст рецепта или выберите скриншот'}, recipe?.text ?? '');
+  const steps = h('textarea', {name: 'steps', rows: 3, maxlength: 12000,
+    placeholder: 'Каждый шаг с новой строки'}, recipe?.steps.join('\n') ?? '');
+  const file = h('input', {type: 'file', accept: 'image/*', hidden: true});
+  const report = h('p', {role: 'status', class: 'recipe-status'});
+  const rows = h('div', {class: 'stack'});
+  const mealTypes = ['breakfast', 'lunch', 'snack', 'dinner', 'dessert'];
+  const meals = h('div', {class: 'checks'}, mealTypes.map(slot =>
+    h('label', {}, h('input', {type: 'checkbox', name: 'meal', value: slot, checked: recipe?.meals.includes(slot) ?? false}),
+      ' ' + catalog.names[slot])));
+  const saveText = h('button', {class: 'btn ghost', type: 'submit', value: 'text'}, 'Сохранить как текст');
+  const saveMenu = h('button', {class: 'btn', type: 'submit', value: 'menu'}, 'Сохранить в меню');
+  let active = true;
+
+  function addRow(data = {}) {
+    const row = h('div', {class: 'recipe-ingredient'},
+      data.line ? h('p', {class: 'muted small ingredient-caption'}, data.line) : null,
+      h('label', {}, 'Продукт', select('food', foodOptions, data.key ?? '')),
+      h('label', {}, 'Вес, г', h('input', {type: 'number', name: 'grams', min: 0.1, max: 100000, step: 'any', value: data.grams})),
+      button('Убрать', () => row.remove()));
+    row.dataset.original = data.line ?? '';
+    rows.append(row);
+  }
+
+  function applyText(text) {
+    const parsed = parseRecipeText(text, menu.foods);
+    if (!name.value.trim()) name.value = parsed.name;
+    if (!steps.value.trim()) steps.value = parsed.steps.join('\n').slice(0, steps.maxLength);
+    const hasRows = [...rows.children].some(row => row.dataset.original ||
+      row.querySelector('select').value || row.querySelector('input').value);
+    if (parsed.rows.length && !hasRows) {
+      rows.replaceChildren();
+      parsed.rows.slice(0, 40).forEach(addRow);
+    }
+    if (parsed.rows.length > 40) return 'В черновик подставлены первые 40 строк. Остальные доступны в тексте.';
+    return hasRows && parsed.rows.length
+      ? 'Текст обновлён. Заполненные строки ингредиентов оставлены как есть.'
+      : 'Проверьте название, продукты и количества перед сохранением.';
+  }
+
+  const choose = button('Выбрать скриншот из галереи', () => file.click(), 'btn ghost');
+  file.addEventListener('change', async () => {
+    const image = file.files[0];
+    file.value = '';
+    if (!image) return;
+    if (image.size > 20 * 1024 * 1024) {
+      report.textContent = 'Выберите изображение размером до 20 МБ.';
+      return;
+    }
+    choose.disabled = true;
+    report.textContent = 'Загружается распознавание. Первый запуск может занять некоторое время.';
+    try {
+      const {readRecipeImage} = await import('./recipe-ocr.js');
+      const text = await readRecipeImage(image, progress => {
+        if (active && progress.status === 'recognizing text') {
+          report.textContent = 'Читаю скриншот… ' + Math.round(progress.progress * 100) + '%';
+        }
+      });
+      if (!active) return;
+      if (!text) {
+        report.textContent = 'Текст не найден. Выберите более чёткий скриншот или введите рецепт вручную.';
+        return;
+      }
+      const next = [original.value.trim(), text].filter(Boolean).join('\n\n');
+      original.value = next.slice(0, original.maxLength);
+      report.textContent = applyText(text);
+    } catch {
+      if (active) report.textContent = 'Не удалось прочитать скриншот. Попробуйте PNG или JPG либо введите текст вручную.';
+    } finally {
+      choose.disabled = false;
+    }
+  });
+
+  const savedRows = recipe?.ingredientDraft ?? recipe?.ingredients.map(([key, grams]) => ({key, grams})) ?? [];
+  if (savedRows.length) savedRows.forEach(addRow);
+  else addRow();
+
+  const form = h('form', {class: 'stack gap recipe-editor', novalidate: true},
+    h('div', {class: 'head-row'}, h('h2', {}, recipe ? 'Редактировать рецепт' : 'Добавить рецепт'),
+      button('Закрыть', () => dialog.close())),
+    h('div', {class: 'row-gap'}, choose, file),
+    h('label', {}, 'Текст рецепта', original),
+    h('div', {class: 'row-gap'}, button('Подставить из текста', () => {
+      report.textContent = original.value.trim() ? applyText(original.value) : 'Введите или вставьте текст рецепта.';
+    })),
+    report,
+    h('div', {class: 'form-fields'}, h('label', {}, 'Название', name), h('label', {}, 'Время, мин', minutes)),
+    h('fieldset', {}, h('legend', {}, 'Ингредиенты на одну порцию'),
+      h('p', {class: 'muted small'}, 'Для калорий и БЖУ выберите продукты из списка и проверьте вес в граммах.'),
+      rows, button('Добавить ингредиент', () => {
+        if (rows.children.length < 40) addRow();
+        else report.textContent = 'Можно добавить до 40 ингредиентов.';
+      })),
+    h('label', {}, 'Шаги приготовления', steps),
+    h('fieldset', {}, h('legend', {}, 'Для какого приёма пищи'), meals),
+    h('div', {class: 'row-gap'}, saveText, saveMenu));
+
+  function error(message, target) {
+    report.textContent = message;
+    report.scrollIntoView({block: 'nearest'});
+    target?.focus({preventScroll: true});
+  }
+
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    const title = name.value.trim();
+    if (!title) {
+      error('Введите название рецепта.', name);
+      return;
+    }
+    const forMenu = event.submitter === saveMenu;
+    const draft = [...rows.children].map(row => {
+      const amount = row.querySelector('input');
+      return {key: row.querySelector('select').value,
+        grams: amount.value && amount.validity.valid ? Number(amount.value) : null, line: row.dataset.original};
+    }).filter(row => row.key || row.grams != null || row.line);
+    const ingredients = draft.filter(row => own(menu.foods, row.key) && row.grams > 0)
+      .map(row => [row.key, row.grams]);
+    const selectedMeals = new FormData(form).getAll('meal');
+    if (forMenu && (!ingredients.length || ingredients.length !== draft.length || !selectedMeals.length)) {
+      error('Для меню заполните все строки продуктов и выберите хотя бы один приём пищи. Текст можно сохранить отдельно.');
+      return;
+    }
+    if (!minutes.validity.valid) {
+      error('Укажите время целым числом от 0 до 1440 минут.', minutes);
+      return;
+    }
+    const directions = steps.value.split('\n').map(line => line.trim()).filter(Boolean);
+    const text = original.value.trim();
+    if (!ingredients.length && !directions.length && !text) {
+      error('Добавьте текст рецепта, ингредиенты или шаги приготовления.', original);
+      return;
+    }
+    const record = {...recipe, id: recipe?.id ?? 'u-' + crypto.randomUUID(), custom: true,
+      name: title, minutes: Number(minutes.value), meals: forMenu ? selectedMeals : [],
+      ingredients, steps: directions, text, ingredientDraft: draft};
+    const recipes = recipe ? state.recipes.map(row => row.id === recipe.id ? record : row) : [...state.recipes, record];
+    if (!update({...state, recipes})) {
+      error('Не удалось сохранить рецепт в этом браузере.');
+      return;
+    }
+    recipeFilter = 'mine';
+    finishDialog();
+  });
+
+  dialog.addEventListener('close', () => { active = false; }, {once: true});
+  dialog.replaceChildren(form);
+  dialog.showModal();
+}
+
 function recipesPage(menu) {
   const search = h('input', {type: 'search', placeholder: 'Найти блюдо', 'aria-label': 'Найти блюдо'});
-  const filter = select('filter', [['all', 'Все блюда'], ['featured', 'Сохранённые рецепты'], ['mine', 'Мои блюда'], ['fav', 'Любимые'], ['hide', 'Скрытые']], 'all');
+  const filter = select('filter', [['all', 'Все блюда'], ['featured', 'Сохранённые рецепты'], ['mine', 'Мои блюда'], ['fav', 'Любимые'], ['hide', 'Скрытые']], recipeFilter);
   const output = h('div', {class: 'recipe-list'});
   function show() {
     const found = menu.recipes.filter(r => r.name.toLowerCase().includes(search.value.trim().toLowerCase()) &&
@@ -348,8 +511,9 @@ function recipesPage(menu) {
       return card(h('details', {}, h('summary', {}, r.name + (r.custom ? ' · моё' : '')),
         h('ul', {class: 'items'}, r.ingredients.flatMap(([key, grams]) => menu.foods[key]
           ? [h('li', {}, menu.foods[key].name, h('b', {}, `${format(grams)} г`))] : [])),
-        h('ol', {class: 'steps'}, r.steps.map(step => h('li', {}, step)))),
-        h('div', {class: 'row-gap'}, button(pref === 'fav' ? 'Убрать из любимых' : 'В любимые', () => {
+        r.steps.length ? h('ol', {class: 'steps'}, r.steps.map(step => h('li', {}, step))) : null,
+        r.text ? h('details', {}, h('summary', {}, 'Текст рецепта'), h('p', {class: 'recipe-text'}, r.text)) : null),
+        h('div', {class: 'row-gap'}, r.custom ? button('Редактировать', () => recipeEditor(menu, r)) : null, button(pref === 'fav' ? 'Убрать из любимых' : 'В любимые', () => {
           setPreference(r.id, pref, 'fav');
         }), button(pref === 'hide' ? 'Вернуть в меню' : 'Скрыть из меню', () => {
           setPreference(r.id, pref, 'hide');
@@ -358,9 +522,10 @@ function recipesPage(menu) {
     if (!found.length) output.append(h('p', {}, 'Блюд нет.'));
   }
   search.addEventListener('input', show);
-  filter.addEventListener('change', show);
+  filter.addEventListener('change', () => { recipeFilter = filter.value; show(); });
   show();
-  return [h('h1', {}, 'Блюда'), card(h('div', {class: 'form-fields'}, search, filter)), output];
+  return [h('div', {class: 'head-row'}, h('h1', {}, 'Блюда'),
+    button('Добавить рецепт', () => recipeEditor(menu), 'btn')), card(h('div', {class: 'form-fields'}, search, filter)), output];
 }
 
 function weightPage() {
