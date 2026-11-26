@@ -21,6 +21,9 @@ const finite = Number.isFinite;
 const between = (value, lo, hi) => finite(value) && value >= lo && value <= hi;
 const strings = value => Array.isArray(value) && value.every(item => typeof item === 'string');
 const measures = ['neck', 'waist', 'hip'];
+const menuDefaults = {
+  activity: 'light', mode: 'standard', meals: 4, sweet: true, adjust: 0, exclusions: ['beef']
+};
 const dateFormat = /^\d{4}-\d{2}-\d{2}$/;
 const dateValid = value => typeof value === 'string' && dateFormat.test(value);
 const own = (record, key) => Object.hasOwn(record, key);
@@ -212,8 +215,7 @@ function field(title, name, value, min, max, step = 'any', required = true) {
 }
 
 function profilePage() {
-  const p = state.profile ?? {sex: 'm', age: 30, height: 175, weight: 75, bf: 25, activity: 'light',
-    mode: 'standard', meals: 4, sweet: false, adjust: 0, exclusions: []};
+  const p = state.profile ?? {sex: 'm', age: 30, height: 175, weight: 75, bf: 25, ...menuDefaults};
   const form = h('form', {class: 'card stack gap'}, h('div', {class: 'form-fields'},
     h('label', {}, 'Пол', select('sex', [['m', 'Мужской'], ['f', 'Женский']], p.sex)),
     field('Возраст', 'age', p.age, 14, 90, 1), field('Рост, см', 'height', p.height, 120, 220),
@@ -226,7 +228,17 @@ function profilePage() {
     h('fieldset', {}, h('legend', {}, 'Исключить из меню'),
       h('div', {class: 'checks'}, Object.entries(catalog.exclusions).map(([key, [name]]) =>
         h('label', {}, h('input', {type: 'checkbox', name: 'exclusions', value: key, checked: p.exclusions.includes(key)}), ' ' + name)))),
-    h('button', {class: 'btn', type: 'submit'}, 'Сохранить и открыть меню'));
+    h('div', {class: 'row-gap'},
+      h('button', {class: 'btn', type: 'submit'}, 'Сохранить и открыть меню'),
+      state.profile ? button('Подставить стандарт меню', () => {
+        for (const key of ['activity', 'mode', 'meals', 'adjust']) {
+          form.elements.namedItem(key).value = menuDefaults[key];
+        }
+        form.elements.namedItem('sweet').checked = menuDefaults.sweet;
+        for (const input of form.querySelectorAll('input[name=exclusions]')) {
+          input.checked = menuDefaults.exclusions.includes(input.value);
+        }
+      }) : null));
   form.addEventListener('submit', event => {
     event.preventDefault();
     const data = new FormData(form);
@@ -326,11 +338,11 @@ function diaryPage(menu) {
 
 function recipesPage(menu) {
   const search = h('input', {type: 'search', placeholder: 'Найти блюдо', 'aria-label': 'Найти блюдо'});
-  const filter = select('filter', [['all', 'Все блюда'], ['mine', 'Мои блюда'], ['fav', 'Любимые'], ['hide', 'Скрытые']], 'all');
+  const filter = select('filter', [['all', 'Все блюда'], ['featured', 'Сохранённые рецепты'], ['mine', 'Мои блюда'], ['fav', 'Любимые'], ['hide', 'Скрытые']], 'all');
   const output = h('div', {class: 'recipe-list'});
   function show() {
     const found = menu.recipes.filter(r => r.name.toLowerCase().includes(search.value.trim().toLowerCase()) &&
-      (filter.value === 'all' || (filter.value === 'mine' ? r.custom : filter.value === state.prefs[r.id])));
+      (filter.value === 'all' || (filter.value === 'mine' ? r.custom : filter.value === 'featured' ? r.featured : filter.value === state.prefs[r.id])));
     output.replaceChildren(...found.map(r => {
       const pref = state.prefs[r.id];
       return card(h('details', {}, h('summary', {}, r.name + (r.custom ? ' · моё' : '')),

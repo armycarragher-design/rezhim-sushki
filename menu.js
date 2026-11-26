@@ -1,4 +1,10 @@
 import catalog from './catalog.js';
+import savedRecipes from './saved-recipes.js';
+
+function recipeSignature(recipe) {
+  const {name, meals, minutes, ingredients, steps} = recipe;
+  return JSON.stringify([name, meals, minutes, ingredients, steps]);
+}
 
 export function round(value) {
   const lower = Math.floor(value);
@@ -28,7 +34,14 @@ export function makeMenu(state, week) {
   const p = state.profile;
   const plan = planFor(p);
   const foods = {...catalog.foods, ...state.foods};
-  const recipes = [...catalog.recipes, ...state.recipes];
+  const savedSignatures = new Set(savedRecipes.map(recipeSignature));
+  const importedSignatures = new Set(state.recipes.map(recipeSignature));
+  const recipes = [
+    ...catalog.recipes,
+    ...savedRecipes.filter(recipe => !importedSignatures.has(recipeSignature(recipe))),
+    ...state.recipes.map(recipe => savedSignatures.has(recipeSignature(recipe))
+      ? {...recipe, featured: true} : recipe)
+  ];
   const byId = new Map(recipes.map(r => [r.id, r]));
   const blocked = new Set(p.exclusions.flatMap(key => catalog.exclusions[key]?.[1] || []));
   const slots = [...catalog.slots[p.meals], ...(p.sweet ? ['dessert'] : [])];
@@ -64,7 +77,7 @@ export function makeMenu(state, week) {
         const factor = key === 'f' ? 9 : 4;
         return sum + Math.abs(base[key] * factor / baseKcal(r) - plan[key] * factor / plan.kcal);
       }, 0);
-      return {r, score: macroError + randomness(week + ':' + pool + ':' + r.id) * 0.3 - (r.custom ? 0.25 : 0)};
+      return {r, score: macroError + randomness(week + ':' + pool + ':' + r.id) * 0.3 - ((r.custom || r.featured) ? 0.25 : 0)};
     });
     scored.sort((a, b) => Number(state.prefs[b.r.id] === 'fav') - Number(state.prefs[a.r.id] === 'fav') || a.score - b.score);
     chosen.set(pool, scored.slice(0, catalog.repeats[pool]).map(entry => entry.r));
